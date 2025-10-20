@@ -9,6 +9,7 @@ class AuthProvider extends ChangeNotifier {
 
   final AuthRepository _repository;
   final SharedPreferences _storage;
+  Future<bool>? _ongoingRefresh;
 
   AuthSession? _session;
   bool _isLoading = false;
@@ -115,30 +116,19 @@ class AuthProvider extends ChangeNotifier {
     if (!session.willExpireWithin(buffer)) {
       return true;
     }
+
+    if (_ongoingRefresh != null) {
+      return await _ongoingRefresh!;
+    }
+
+    final refreshFuture = _performRefresh(session);
+    _ongoingRefresh = refreshFuture;
     try {
-      final response = await _repository.refresh(session.refreshToken);
-      final accessToken = response['accessToken'] as String?;
-      final refreshToken = response['refreshToken'] as String?;
-      if (accessToken == null || refreshToken == null) {
-        return false;
+      return await refreshFuture;
+    } finally {
+      if (identical(_ongoingRefresh, refreshFuture)) {
+        _ongoingRefresh = null;
       }
-
-      final refreshed = AuthSession.fromTokens(
-        accessToken: accessToken,
-        refreshToken: refreshToken,
-      );
-      if (refreshed == null) {
-        return false;
-      }
-
-      _session = refreshed;
-      await _persistSession(refreshed);
-      notifyListeners();
-      return true;
-    } on ApiException {
-      return false;
-    } catch (_) {
-      return false;
     }
   }
 
@@ -184,6 +174,38 @@ class AuthProvider extends ChangeNotifier {
         _SessionStorageKeys.expiresAt,
         session.expiresAt!.toIso8601String(),
       );
+    }
+  }
+
+  Future<bool> _performRefresh(AuthSession session) async {
+    try {
+      final response = await _repository.refresh(session.refreshToken);
+      final accessToken = response['accessToken'] as String?;
+      final refreshToken = response['refreshToken'] as String?;
+      if (accessToken == null || refreshToken == null) {
+        return false;
+      }
+
+      final refreshed = AuthSession.fromTokens(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+      );
+      if (refreshed == null) {
+        return false;
+      }
+
+      if (!identical(_session, session)) {
+        return true;
+      }
+
+      _session = refreshed;
+      await _persistSession(refreshed);
+      notifyListeners();
+      return true;
+    } on ApiException {
+      return false;
+    } catch (_) {
+      return false;
     }
   }
 }
